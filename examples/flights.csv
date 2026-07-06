@@ -1,0 +1,5 @@
+departure_country,departure_timezone,departure_local,arrival_country,arrival_timezone,arrival_local
+France,Europe/Paris,2026-01-12T09:30,Japan,Asia/Tokyo,2026-01-12T19:10
+Japan,Asia/Tokyo,2026-02-04T23:55,United States,America/Los_Angeles,2026-02-04T16:20
+United States,America/Los_Angeles,2026-03-18T08:15,Canada,America/Toronto,2026-03-18T16:05
+Canada,America/Toronto,2026-04-02T22:10,France,Europe/Paris,2026-04-03T11:45
