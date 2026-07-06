@@ -11,8 +11,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use day_counter::{
-    EndMode, Location, MONTHS, Report, ReportOptions, load_flights_csv, parse_as_of,
-    parse_timezone, percentage, seconds_to_days,
+    EndMode, MONTHS, Report, ReportOptions, TripInput, load_trip_json, percentage, seconds_to_days,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -22,37 +21,9 @@ use ratatui::{Terminal, backend::CrosstermBackend};
     about = "Count country presence by hour from local-time flight records"
 )]
 struct Cli {
-    /// CSV file with departure/arrival countries, IANA time zones, and local timestamps.
-    #[arg(short, long)]
-    flights: PathBuf,
-
-    /// Calendar year to report. Defaults to the current UTC year.
-    #[arg(short, long)]
-    year: Option<i32>,
-
-    /// Country where the year starts at local Jan 1 00:00.
-    #[arg(long)]
-    initial_country: String,
-
-    /// IANA time zone for the initial country, for example Europe/Paris.
-    #[arg(long)]
-    initial_timezone: String,
-
-    /// End the report at this instant. Accepts RFC3339 with offset or local time with --as-of-timezone.
-    #[arg(long)]
-    as_of: Option<String>,
-
-    /// IANA time zone used when --as-of has no offset.
-    #[arg(long)]
-    as_of_timezone: Option<String>,
-
-    /// Count the complete calendar year instead of year-to-date.
-    #[arg(long)]
-    full_year: bool,
-
-    /// Drop flight duration instead of displaying it as an "In transit" bucket.
-    #[arg(long)]
-    no_transit: bool,
+    /// JSON config file with report settings and flights.
+    #[arg(short, long, alias = "input")]
+    config: PathBuf,
 
     /// Print a text summary instead of opening the Ratatui dashboard.
     #[arg(long)]
@@ -61,32 +32,29 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let year = cli.year.unwrap_or_else(|| Utc::now().year());
-    let initial_timezone = parse_timezone(&cli.initial_timezone)?;
-    let as_of_timezone = cli
-        .as_of_timezone
-        .as_deref()
-        .map(parse_timezone)
-        .transpose()?;
+    let TripInput {
+        year,
+        initial_location,
+        full_year,
+        include_transit,
+        flights,
+    } = load_trip_json(&cli.config)?;
 
-    let end_mode = if cli.full_year {
+    let end_mode = if full_year {
         EndMode::FullYear
-    } else if let Some(as_of) = cli.as_of.as_deref() {
-        EndMode::Until(parse_as_of(as_of, as_of_timezone)?)
     } else if year == Utc::now().year() {
         EndMode::Until(Utc::now())
     } else {
         EndMode::FullYear
     };
 
-    let flights = load_flights_csv(&cli.flights)?;
     let report = day_counter::build_report(
         flights,
         ReportOptions {
             year,
-            initial_location: Location::new(cli.initial_country, initial_timezone),
+            initial_location,
             end_mode,
-            include_transit: !cli.no_transit,
+            include_transit,
         },
     )?;
 

@@ -6,18 +6,41 @@ departure and arrival times by converting every timestamp through an explicit
 IANA time zone, then displays monthly and yearly percentages in a Ratatui
 dashboard.
 
-## Input format
+## Input Format
 
-Provide a CSV file with these headers:
+Provide a JSON file with the report settings and flight list:
 
-```csv
-departure_country,departure_timezone,departure_local,arrival_country,arrival_timezone,arrival_local
-France,Europe/Paris,2026-01-12T09:30,Japan,Asia/Tokyo,2026-01-12T19:10
-Japan,Asia/Tokyo,2026-02-04T23:55,United States,America/Los_Angeles,2026-02-04T16:20
+```json
+{
+  "year": 2026,
+  "initial_country": "France",
+  "initial_timezone": "Europe/Paris",
+  "include_transit": true,
+  "flights": [
+    {
+      "departure_country": "France",
+      "departure_timezone": "Europe/Paris",
+      "departure_local": "2026-01-12T09:30",
+      "arrival_country": "Japan",
+      "arrival_timezone": "Asia/Tokyo",
+      "arrival_local": "2026-01-12T19:10"
+    },
+    {
+      "departure_country": "Japan",
+      "departure_timezone": "Asia/Tokyo",
+      "departure_local": "2026-02-04T23:55",
+      "arrival_country": "United States",
+      "arrival_timezone": "America/Los_Angeles",
+      "arrival_local": "2026-02-04T16:20"
+    }
+  ]
+}
 ```
 
 Timestamps are local wall-clock times. Accepted timestamp formats are
 `YYYY-MM-DDTHH:MM`, `YYYY-MM-DD HH:MM`, and the same forms with seconds.
+
+JSON keys can use `snake_case` or hyphenated names such as `initial-country`.
 
 IANA time zones are required for accuracy. Country names alone are ambiguous for
 countries with multiple time zones, and offsets alone are not enough to handle
@@ -32,18 +55,15 @@ DST transitions correctly.
   time.
 - Flight duration is shown as `In transit` by default, using the departure time
   zone for monthly grouping.
-- Pass `--no-transit` to drop flight duration from the report.
+- Set `"include_transit": false` to drop flight duration from the report.
+- Set `"full_year": true` to force a complete year.
 - Ambiguous or nonexistent local times during DST transitions are rejected so the
   input can be corrected explicitly.
 
 ## Run
 
 ```sh
-cargo run -- \
-  --flights examples/flights.csv \
-  --year 2026 \
-  --initial-country France \
-  --initial-timezone Europe/Paris
+cargo run -- --config examples/trip.json
 ```
 
 In a normal terminal this opens the Ratatui dashboard. Press `q` or `Esc` to
@@ -52,27 +72,8 @@ quit.
 For text output:
 
 ```sh
-cargo run -- \
-  --flights examples/flights.csv \
-  --year 2026 \
-  --initial-country France \
-  --initial-timezone Europe/Paris \
-  --summary
+cargo run -- --config examples/trip.json --summary
 ```
 
-By default, the current year is counted until now and past years are counted as a
-full calendar year. Use `--full-year` to force a complete year, or `--as-of` to
-choose an exact ending instant:
-
-```sh
-cargo run -- \
-  --flights examples/flights.csv \
-  --year 2026 \
-  --initial-country France \
-  --initial-timezone Europe/Paris \
-  --as-of 2026-07-03T18:00 \
-  --as-of-timezone Europe/Paris
-```
-
-`--as-of` also accepts RFC3339 timestamps with offsets, such as
-`2026-07-03T18:00:00+02:00`.
+If `full_year` is not set, the current year is counted until now and other years
+are counted as a full calendar year.

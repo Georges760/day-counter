@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::fs::File;
+use std::fs;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -67,6 +67,15 @@ pub struct ReportOptions {
 }
 
 #[derive(Debug, Clone)]
+pub struct TripInput {
+    pub year: i32,
+    pub initial_location: Location,
+    pub full_year: bool,
+    pub include_transit: bool,
+    pub flights: Vec<Flight>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Report {
     pub year: i32,
     pub entries: Vec<CountryStats>,
@@ -102,28 +111,47 @@ impl CountryStats {
 }
 
 #[derive(Debug, Deserialize)]
-struct CsvFlight {
+#[serde(deny_unknown_fields)]
+struct JsonTrip {
+    year: i32,
+    #[serde(alias = "initial-country")]
+    initial_country: String,
+    #[serde(alias = "initial-timezone")]
+    initial_timezone: String,
+    #[serde(default, alias = "full-year")]
+    full_year: bool,
+    #[serde(default = "default_include_transit", alias = "include-transit")]
+    include_transit: bool,
+    flights: Vec<JsonFlight>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JsonFlight {
+    #[serde(alias = "departure-country")]
     departure_country: String,
+    #[serde(alias = "departure-timezone")]
     departure_timezone: String,
+    #[serde(alias = "departure-local")]
     departure_local: String,
+    #[serde(alias = "arrival-country")]
     arrival_country: String,
+    #[serde(alias = "arrival-timezone")]
     arrival_timezone: String,
+    #[serde(alias = "arrival-local")]
     arrival_local: String,
 }
 
-pub fn load_flights_csv(path: impl AsRef<Path>) -> Result<Vec<Flight>> {
+pub fn load_trip_json(path: impl AsRef<Path>) -> Result<TripInput> {
     let path = path.as_ref();
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mut reader = csv::Reader::from_reader(file);
-    let mut flights = Vec::new();
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    parse_trip_json(&contents).with_context(|| format!("invalid JSON in {}", path.display()))
+}
 
-    for (index, row) in reader.deserialize::<CsvFlight>().enumerate() {
-        let row = row.with_context(|| format!("invalid CSV row {}", index + 2))?;
-        flights
-            .push(parse_csv_flight(row).with_context(|| format!("invalid CSV row {}", index + 2))?);
-    }
-
-    Ok(flights)
+pub fn parse_trip_json(contents: &str) -> Result<TripInput> {
+    let trip: JsonTrip = serde_json::from_str(contents)?;
+    parse_json_trip(trip)
 }
 
 pub fn parse_timezone(value: &str) -> Result<Tz> {
@@ -171,17 +199,6 @@ pub fn local_datetime_to_utc(timezone: Tz, local: NaiveDateTime) -> Result<DateT
             timezone
         ),
     }
-}
-
-pub fn parse_as_of(value: &str, timezone: Option<Tz>) -> Result<DateTime<Utc>> {
-    if let Ok(value) = DateTime::parse_from_rfc3339(value.trim()) {
-        return Ok(value.with_timezone(&Utc));
-    }
-
-    let timezone = timezone.context(
-        "--as-of without an offset requires --as-of-timezone, for example --as-of 2026-07-03T18:00 --as-of-timezone Europe/Paris",
-    )?;
-    local_datetime_to_utc(timezone, parse_local_datetime(value)?)
 }
 
 pub fn build_report(mut flights: Vec<Flight>, options: ReportOptions) -> Result<Report> {
@@ -262,7 +279,31 @@ pub fn percentage(part: i64, total: i64) -> f64 {
     }
 }
 
-fn parse_csv_flight(row: CsvFlight) -> Result<Flight> {
+fn default_include_transit() -> bool {
+    true
+}
+
+fn parse_json_trip(trip: JsonTrip) -> Result<TripInput> {
+    let initial_timezone = parse_timezone(&trip.initial_timezone)?;
+
+    let mut flights = Vec::with_capacity(trip.flights.len());
+    for (index, flight) in trip.flights.into_iter().enumerate() {
+        flights.push(
+            parse_json_flight(flight)
+                .with_context(|| format!("invalid flight at index {}", index))?,
+        );
+    }
+
+    Ok(TripInput {
+        year: trip.year,
+        initial_location: Location::new(trip.initial_country.trim(), initial_timezone),
+        full_year: trip.full_year,
+        include_transit: trip.include_transit,
+        flights,
+    })
+}
+
+fn parse_json_flight(row: JsonFlight) -> Result<Flight> {
     let departure_timezone = parse_timezone(&row.departure_timezone)?;
     let arrival_timezone = parse_timezone(&row.arrival_timezone)?;
     let departure_local = parse_local_datetime(&row.departure_local)?;
@@ -515,5 +556,36 @@ mod tests {
         let local = parse_local_datetime("2026-10-25T02:30").unwrap();
         let error = local_datetime_to_utc(timezone, local).unwrap_err();
         assert!(error.to_string().contains("ambiguous"));
+    }
+
+    #[test]
+    fn parses_json_trip_with_hyphenated_aliases() {
+        let trip = parse_trip_json(
+            r#"
+            {
+              "year": 2026,
+              "initial-country": "France",
+              "initial-timezone": "Europe/Paris",
+              "include-transit": false,
+              "flights": [
+                {
+                  "departure-country": "France",
+                  "departure-timezone": "Europe/Paris",
+                  "departure-local": "2026-01-12T09:30",
+                  "arrival-country": "Japan",
+                  "arrival-timezone": "Asia/Tokyo",
+                  "arrival-local": "2026-01-12T19:10"
+                }
+              ]
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(trip.year, 2026);
+        assert_eq!(trip.initial_location.country, "France");
+        assert!(!trip.include_transit);
+        assert_eq!(trip.flights.len(), 1);
+        assert_eq!(trip.flights[0].arrival.location.country, "Japan");
     }
 }

@@ -1,0 +1,40 @@
+{
+  "year": 2026,
+  "initial_country": "France",
+  "initial_timezone": "Europe/Paris",
+  "include_transit": true,
+  "flights": [
+    {
+      "departure_country": "France",
+      "departure_timezone": "Europe/Paris",
+      "departure_local": "2026-01-12T09:30",
+      "arrival_country": "Japan",
+      "arrival_timezone": "Asia/Tokyo",
+      "arrival_local": "2026-01-12T19:10"
+    },
+    {
+      "departure_country": "Japan",
+      "departure_timezone": "Asia/Tokyo",
+      "departure_local": "2026-02-04T23:55",
+      "arrival_country": "United States",
+      "arrival_timezone": "America/Los_Angeles",
+      "arrival_local": "2026-02-04T16:20"
+    },
+    {
+      "departure_country": "United States",
+      "departure_timezone": "America/Los_Angeles",
+      "departure_local": "2026-03-18T08:15",
+      "arrival_country": "Canada",
+      "arrival_timezone": "America/Toronto",
+      "arrival_local": "2026-03-18T16:05"
+    },
+    {
+      "departure_country": "Canada",
+      "departure_timezone": "America/Toronto",
+      "departure_local": "2026-04-02T22:10",
+      "arrival_country": "France",
+      "arrival_timezone": "Europe/Paris",
+      "arrival_local": "2026-04-03T11:45"
+    }
+  ]
+}
