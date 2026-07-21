@@ -28,6 +28,10 @@ struct Cli {
     /// Print a text summary instead of opening the Ratatui dashboard.
     #[arg(long)]
     summary: bool,
+
+    /// Project the report over the full year instead of stopping at the current time.
+    #[arg(long)]
+    full_year: bool,
 }
 
 fn main() -> Result<()> {
@@ -40,7 +44,7 @@ fn main() -> Result<()> {
         flights,
     } = load_trip_json(&cli.config)?;
 
-    let end_mode = if full_year {
+    let end_mode = if full_year || cli.full_year {
         EndMode::FullYear
     } else if year == Utc::now().year() {
         EndMode::Until(Utc::now())
