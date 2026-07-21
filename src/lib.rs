@@ -123,6 +123,8 @@ struct JsonTrip {
     #[serde(default = "default_include_transit", alias = "include-transit")]
     include_transit: bool,
     flights: Vec<JsonFlight>,
+    #[serde(default, alias = "border-crossings", alias = "border_crossings")]
+    crossings: Vec<JsonCrossing>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +142,15 @@ struct JsonFlight {
     arrival_timezone: String,
     #[serde(alias = "arrival-local")]
     arrival_local: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JsonCrossing {
+    country: String,
+    timezone: String,
+    #[serde(alias = "crossed_local", alias = "crossed-local")]
+    local: String,
 }
 
 pub fn load_trip_json(path: impl AsRef<Path>) -> Result<TripInput> {
@@ -286,11 +297,17 @@ fn default_include_transit() -> bool {
 fn parse_json_trip(trip: JsonTrip) -> Result<TripInput> {
     let initial_timezone = parse_timezone(&trip.initial_timezone)?;
 
-    let mut flights = Vec::with_capacity(trip.flights.len());
+    let mut flights = Vec::with_capacity(trip.flights.len() + trip.crossings.len());
     for (index, flight) in trip.flights.into_iter().enumerate() {
         flights.push(
             parse_json_flight(flight)
                 .with_context(|| format!("invalid flight at index {}", index))?,
+        );
+    }
+    for (index, crossing) in trip.crossings.into_iter().enumerate() {
+        flights.push(
+            parse_json_crossing(crossing)
+                .with_context(|| format!("invalid crossing at index {}", index))?,
         );
     }
 
@@ -320,6 +337,21 @@ fn parse_json_flight(row: JsonFlight) -> Result<Flight> {
             local: arrival_local,
             utc: local_datetime_to_utc(arrival_timezone, arrival_local)?,
         },
+    })
+}
+
+fn parse_json_crossing(row: JsonCrossing) -> Result<Flight> {
+    let timezone = parse_timezone(&row.timezone)?;
+    let local = parse_local_datetime(&row.local)?;
+    let endpoint = FlightEndpoint {
+        location: Location::new(row.country.trim(), timezone),
+        local,
+        utc: local_datetime_to_utc(timezone, local)?,
+    };
+
+    Ok(Flight {
+        departure: endpoint.clone(),
+        arrival: endpoint,
     })
 }
 
@@ -548,6 +580,60 @@ mod tests {
         let france = report.country("France").unwrap();
         assert_eq!(france.seconds_by_month[0], 3_600);
         assert_eq!(france.seconds_by_month[1], 3_600);
+    }
+
+    #[test]
+    fn land_crossing_switches_country_without_transit() {
+        let trip = parse_trip_json(
+            r#"
+            {
+              "year": 2026,
+              "initial_country": "France",
+              "initial_timezone": "Europe/Paris",
+              "flights": [],
+              "crossings": [
+                {
+                  "country": "Spain",
+                  "timezone": "Europe/Madrid",
+                  "local": "2026-01-01T10:00"
+                },
+                {
+                  "country": "France",
+                  "timezone": "Europe/Paris",
+                  "local": "2026-01-01T18:00"
+                }
+              ]
+            }
+            "#,
+        )
+        .unwrap();
+
+        let report = build_report(
+            trip.flights,
+            ReportOptions {
+                year: 2026,
+                initial_location: trip.initial_location,
+                end_mode: EndMode::Until(
+                    local_datetime_to_utc(
+                        parse_timezone("Europe/Paris").unwrap(),
+                        parse_local_datetime("2026-01-02T00:00").unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                include_transit: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.country("France").unwrap().seconds_by_month[0],
+            16 * 3_600
+        );
+        assert_eq!(
+            report.country("Spain").unwrap().seconds_by_month[0],
+            8 * 3_600
+        );
+        assert!(report.country(TRANSIT_BUCKET).is_none());
     }
 
     #[test]

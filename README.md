@@ -33,9 +33,23 @@ Provide a JSON file with the report settings and flight list:
       "arrival_timezone": "America/Los_Angeles",
       "arrival_local": "2026-02-04T16:20"
     }
+  ],
+  "crossings": [
+    {
+      "country": "Spain",
+      "timezone": "Europe/Madrid",
+      "local": "2026-03-10T11:30"
+    }
   ]
 }
 ```
+
+Land border crossings (car, train, on foot, ...) go in the optional
+`crossings` list. Each entry records the moment you entered a country:
+`country` and `timezone` describe the country you are entering, and `local` is
+the wall-clock time in that time zone when you crossed. The previous country
+owns time up to that instant and the new country owns time from it, with no
+`In transit` share.
 
 Timestamps are local wall-clock times. Accepted timestamp formats are
 `YYYY-MM-DDTHH:MM`, `YYYY-MM-DD HH:MM`, and the same forms with seconds.
@@ -56,7 +70,10 @@ DST transitions correctly.
 - Flight duration is shown as `In transit` by default, using the departure time
   zone for monthly grouping.
 - Set `"include_transit": false` to drop flight duration from the report.
-- Set `"full_year": true` to force a complete year.
+- A land border crossing switches the country instantly at the crossing time,
+  so it never contributes to `In transit`.
+- Set `"full_year": true` to force a complete year. The `--full-year` CLI flag
+  does the same without editing the file.
 - Ambiguous or nonexistent local times during DST transitions are rejected so the
   input can be corrected explicitly.
 
