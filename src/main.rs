@@ -4,7 +4,7 @@ use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use chrono::{Datelike, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use clap::Parser;
 use crossterm::{
     execute,
@@ -32,6 +32,10 @@ struct Cli {
     /// Project the report over the full year instead of stopping at the current time.
     #[arg(long)]
     full_year: bool,
+
+    /// Only count time from this date on (YYYY-MM-DD, midnight in the initial time zone).
+    #[arg(long, value_name = "DATE")]
+    start_on: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -52,11 +56,18 @@ fn main() -> Result<()> {
         EndMode::FullYear
     };
 
+    let start_on = cli
+        .start_on
+        .as_deref()
+        .map(parse_start_date)
+        .transpose()?;
+
     let report = day_counter::build_report(
         flights,
         ReportOptions {
             year,
             initial_location,
+            start_on,
             end_mode,
             include_transit,
         },
@@ -68,6 +79,11 @@ fn main() -> Result<()> {
     }
 
     run_tui(&report).context("failed to run terminal UI")
+}
+
+fn parse_start_date(value: &str) -> Result<NaiveDate> {
+    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+        .with_context(|| format!("invalid --start-on date `{value}`; expected YYYY-MM-DD"))
 }
 
 fn run_tui(report: &Report) -> Result<()> {

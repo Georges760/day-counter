@@ -62,6 +62,7 @@ pub enum EndMode {
 pub struct ReportOptions {
     pub year: i32,
     pub initial_location: Location,
+    pub start_on: Option<NaiveDate>,
     pub end_mode: EndMode,
     pub include_transit: bool,
 }
@@ -228,6 +229,20 @@ pub fn build_report(mut flights: Vec<Flight>, options: ReportOptions) -> Result<
     let mut accumulator = Accumulator::default();
     let mut current_location = options.initial_location.clone();
     let mut current_start = start_of_year_utc(options.year, current_location.timezone)?;
+    let report_start = match options.start_on {
+        Some(date) => {
+            if date.year() != options.year {
+                bail!(
+                    "start date {} is outside the report year {}",
+                    date,
+                    options.year
+                );
+            }
+            let midnight = date.and_hms_opt(0, 0, 0).expect("midnight is a valid time");
+            local_boundary_to_utc(current_location.timezone, midnight)?.max(current_start)
+        }
+        None => current_start,
+    };
     let report_end = report_end_guard(options.year, &options.end_mode);
 
     if matches!(options.end_mode, EndMode::Until(end) if end <= current_start) {
@@ -253,7 +268,7 @@ pub fn build_report(mut flights: Vec<Flight>, options: ReportOptions) -> Result<
 
         accumulator.add_interval(
             &current_location,
-            current_start,
+            current_start.max(report_start),
             flight.departure_utc().min(report_end),
             options.year,
         )?;
@@ -263,7 +278,7 @@ pub fn build_report(mut flights: Vec<Flight>, options: ReportOptions) -> Result<
                 Location::new(TRANSIT_BUCKET, flight.departure.location.timezone);
             accumulator.add_interval(
                 &transit_location,
-                flight.departure_utc(),
+                flight.departure_utc().max(report_start),
                 flight.arrival_utc().min(report_end),
                 options.year,
             )?;
@@ -273,7 +288,12 @@ pub fn build_report(mut flights: Vec<Flight>, options: ReportOptions) -> Result<
         current_location = flight.arrival.location;
     }
 
-    accumulator.add_interval(&current_location, current_start, report_end, options.year)?;
+    accumulator.add_interval(
+        &current_location,
+        current_start.max(report_start),
+        report_end,
+        options.year,
+    )?;
 
     Ok(accumulator.finish(options.year, options.include_transit))
 }
@@ -535,6 +555,7 @@ mod tests {
             ReportOptions {
                 year: 2026,
                 initial_location: Location::new("France", parse_timezone("Europe/Paris").unwrap()),
+                start_on: None,
                 end_mode: EndMode::Until(
                     local_datetime_to_utc(
                         parse_timezone("Europe/London").unwrap(),
@@ -613,6 +634,7 @@ mod tests {
             ReportOptions {
                 year: 2026,
                 initial_location: trip.initial_location,
+                start_on: None,
                 end_mode: EndMode::Until(
                     local_datetime_to_utc(
                         parse_timezone("Europe/Paris").unwrap(),
@@ -634,6 +656,80 @@ mod tests {
             8 * 3_600
         );
         assert!(report.country(TRANSIT_BUCKET).is_none());
+    }
+
+    #[test]
+    fn start_on_skips_earlier_time_but_tracks_position() {
+        let report = build_report(
+            vec![
+                flight(
+                    "France",
+                    "Europe/Paris",
+                    "2026-01-05T10:00",
+                    "United Kingdom",
+                    "Europe/London",
+                    "2026-01-05T11:00",
+                ),
+                // Straddles the start date: only the post-start transit share counts.
+                flight(
+                    "United Kingdom",
+                    "Europe/London",
+                    "2026-01-31T22:00",
+                    "France",
+                    "Europe/Paris",
+                    "2026-02-01T01:00",
+                ),
+            ],
+            ReportOptions {
+                year: 2026,
+                initial_location: Location::new("France", parse_timezone("Europe/Paris").unwrap()),
+                start_on: parse_local_datetime("2026-02-01T00:00")
+                    .ok()
+                    .map(|value| value.date()),
+                end_mode: EndMode::Until(
+                    local_datetime_to_utc(
+                        parse_timezone("Europe/Paris").unwrap(),
+                        parse_local_datetime("2026-02-02T00:00").unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                include_transit: true,
+            },
+        )
+        .unwrap();
+
+        // Nothing before February 1 counts, even though the January flight moved us to the UK.
+        assert!(report.country("United Kingdom").is_none());
+        // Feb 1 00:00 Paris to arrival Feb 1 01:00 Paris is one hour of clipped transit
+        // (grouped under January because transit uses the departure time zone, London).
+        assert_eq!(
+            report.country(TRANSIT_BUCKET).unwrap().total_seconds(),
+            3_600
+        );
+        // Arrival Feb 1 01:00 Paris until the report end Feb 2 00:00 Paris.
+        assert_eq!(
+            report.country("France").unwrap().seconds_by_month[1],
+            23 * 3_600
+        );
+        assert_eq!(report.country("France").unwrap().seconds_by_month[0], 0);
+    }
+
+    #[test]
+    fn start_on_outside_report_year_is_rejected() {
+        let error = build_report(
+            vec![],
+            ReportOptions {
+                year: 2026,
+                initial_location: Location::new("France", parse_timezone("Europe/Paris").unwrap()),
+                start_on: parse_local_datetime("2025-06-01T00:00")
+                    .ok()
+                    .map(|value| value.date()),
+                end_mode: EndMode::FullYear,
+                include_transit: true,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("outside the report year"));
     }
 
     #[test]

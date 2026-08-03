@@ -74,6 +74,9 @@ DST transitions correctly.
   so it never contributes to `In transit`.
 - Set `"full_year": true` to force a complete year. The `--full-year` CLI flag
   does the same without editing the file.
+- Pass `--start-on YYYY-MM-DD` to only count time from that date on (midnight
+  in the initial time zone). Earlier flights and crossings still determine
+  where the period starts, but their time is excluded from the report.
 - Ambiguous or nonexistent local times during DST transitions are rejected so the
   input can be corrected explicitly.
 
