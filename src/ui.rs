@@ -1,195 +1,386 @@
-use std::time::Duration;
+//! The blit dashboard.
+//!
+//! Every string is formatted once in [`Dashboard::new`] and borrowed by the frame
+//! afterwards. That is not only cheaper than the old four-redraws-a-second loop: blit's
+//! `Text::rich` takes a borrowed `&[Span]`, so the text it points at has to outlive the
+//! node that renders it, and owning it in the dashboard is what makes that work.
+
+use std::rc::Rc;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use day_counter::{MONTHS, Report, percentage, seconds_to_days};
-use ratatui::{
-    Frame, Terminal,
-    backend::Backend,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
+use blit::{Input, Key, Sense, Sides, Sizing, WidgetId, state::Open};
+use blit_tui::{
+    BoundsClip, TuiPlatform, Ui,
+    atom::Border,
+    color::Color,
+    layout::{Align, flex},
+    text::{HorizontalAlign, Span, TextAttributes, TextOptions, TextOverflow},
+    widget::{Block, Text, Title, scroll},
 };
+use day_counter::{MONTHS, Report, percentage, seconds_to_days};
 
-pub fn run<B: Backend>(terminal: &mut Terminal<B>, report: &Report) -> Result<()> {
-    loop {
-        terminal.draw(|frame| draw(frame, report))?;
+use crate::bar::{BarData, StackedBar, color_for};
 
-        if event::poll(Duration::from_millis(250))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
+/// Column a scroll list keeps for its scrollbar.
+const GUTTER: f32 = 1.0;
+
+const HEADINGS: [&str; 4] = ["Country", "Days", "Hours", "Year %"];
+const COLUMNS: [Sizing; 4] = [
+    Sizing::grow_range(14.0, f32::INFINITY),
+    Sizing::fixed(9.0),
+    Sizing::fixed(8.0),
+    Sizing::fixed(8.0),
+];
+
+pub fn run(report: &Report) -> Result<()> {
+    let mut dashboard = Dashboard::new(report);
+    blit_tui::run(|ui| dashboard.render(ui))?;
+    Ok(())
 }
 
-fn draw(frame: &mut Frame<'_>, report: &Report) {
-    let root = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(11),
-            Constraint::Min(12),
-        ])
-        .split(frame.area());
-
-    render_header(frame, root[0], report);
-
-    let top = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(root[1]);
-    render_totals(frame, top[0], report);
-    render_annual_graph(frame, top[1], report);
-    render_monthly_graph(frame, root[2], report);
+/// The dashboard's text, pre-rendered, plus the little interaction state it keeps.
+struct Dashboard {
+    title: String,
+    meta: String,
+    totals: Vec<TotalRow>,
+    annual: Rc<BarData>,
+    legend: Vec<String>,
+    months: Vec<MonthRow>,
+    countries: scroll::State,
+    shares: scroll::State,
+    calendar: scroll::State,
+    /// Country under the pointer, recomputed every frame.
+    hovered: Option<usize>,
+    /// Country clicked in the totals list; survives the pointer leaving.
+    pinned: Option<usize>,
 }
 
-fn render_header(frame: &mut Frame<'_>, area: Rect, report: &Report) {
-    let transit = if report.include_transit {
-        "transit shown"
-    } else {
-        "transit excluded"
-    };
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" day-counter {}", report.year),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!(
-            "  |  {:.2} tracked days  |  {}  |  q/Esc quit",
-            seconds_to_days(report.total_seconds),
-            transit
-        )),
-    ]))
-    .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(header, area);
+struct TotalRow {
+    country: String,
+    days: String,
+    hours: String,
+    share: String,
 }
 
-fn render_totals(frame: &mut Frame<'_>, area: Rect, report: &Report) {
-    let rows = report.entries.iter().enumerate().map(|(index, entry)| {
-        Row::new(vec![
-            Cell::from(entry.country.clone()).style(Style::default().fg(color_for(index))),
-            Cell::from(format!("{:.2}", entry.total_days())),
-            Cell::from(format!("{:.0}", entry.total_seconds() as f64 / 3_600.0)),
-            Cell::from(format!(
-                "{:.1}%",
-                percentage(entry.total_seconds(), report.total_seconds)
-            )),
-        ])
-    });
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Min(14),
-            Constraint::Length(9),
-            Constraint::Length(8),
-            Constraint::Length(8),
-        ],
-    )
-    .header(
-        Row::new(vec!["Country", "Days", "Hours", "Year %"])
-            .style(Style::default().add_modifier(Modifier::BOLD)),
-    )
-    .block(
-        Block::default()
-            .title(" Year Totals ")
-            .borders(Borders::ALL),
-    );
-
-    frame.render_widget(table, area);
+struct MonthRow {
+    label: String,
+    bar: Rc<BarData>,
+    days: String,
+    detail: String,
 }
 
-fn render_annual_graph(frame: &mut Frame<'_>, area: Rect, report: &Report) {
-    let bar_width = area.width.saturating_sub(4) as usize;
-    let buckets = report
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| (index, entry.total_seconds()))
-        .collect::<Vec<_>>();
+impl Dashboard {
+    fn new(report: &Report) -> Self {
+        let transit = if report.include_transit {
+            "transit shown"
+        } else {
+            "transit excluded"
+        };
 
-    let mut lines = Vec::new();
-    lines.push(Line::from(stacked_bar_spans(
-        bar_width,
-        &buckets,
-        report.total_seconds,
-    )));
-    lines.push(Line::raw(""));
-
-    for (index, entry) in report.entries.iter().take(6).enumerate() {
-        lines.push(Line::from(vec![
-            Span::styled("██ ", Style::default().fg(color_for(index))),
-            Span::raw(format!(
-                "{}  {:.2}d  {:.1}%",
-                entry.country,
-                entry.total_days(),
-                percentage(entry.total_seconds(), report.total_seconds)
-            )),
-        ]));
-    }
-
-    if report.entries.len() > 6 {
-        lines.push(Line::raw(format!(
-            "+ {} more countries",
-            report.entries.len() - 6
-        )));
-    }
-
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(" Annual Share ")
-                .borders(Borders::ALL),
-        )
-        .wrap(Wrap { trim: true });
-    frame.render_widget(paragraph, area);
-}
-
-fn render_monthly_graph(frame: &mut Frame<'_>, area: Rect, report: &Report) {
-    let bar_width = area.width.saturating_sub(42).clamp(12, 42) as usize;
-    let mut lines = Vec::new();
-
-    for (month_index, month_name) in MONTHS.iter().enumerate() {
-        let total = report.month_totals[month_index];
-        let buckets = report
+        let totals = report
             .entries
             .iter()
-            .enumerate()
-            .filter_map(|(entry_index, entry)| {
-                let seconds = entry.seconds_by_month[month_index];
-                (seconds > 0).then_some((entry_index, seconds))
+            .map(|entry| TotalRow {
+                country: entry.country.clone(),
+                days: format!("{:.2}", entry.total_days()),
+                hours: format!("{:.0}", entry.total_seconds() as f64 / 3_600.0),
+                share: format!(
+                    "{:.1}%",
+                    percentage(entry.total_seconds(), report.total_seconds)
+                ),
             })
-            .collect::<Vec<_>>();
+            .collect();
 
-        let mut spans = vec![Span::styled(
-            format!("{month_name:<3} "),
-            Style::default().add_modifier(Modifier::BOLD),
-        )];
-        spans.extend(stacked_bar_spans(bar_width, &buckets, total));
-        spans.push(Span::raw(format!(" {:>6.2}d ", seconds_to_days(total))));
-        spans.push(Span::raw(month_detail(report, month_index, total)));
-        lines.push(Line::from(spans));
+        let legend = report
+            .entries
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{}  {:.2}d  {:.1}%",
+                    entry.country,
+                    entry.total_days(),
+                    percentage(entry.total_seconds(), report.total_seconds)
+                )
+            })
+            .collect();
+
+        // Months with nothing tracked carry no information, so they are left out rather
+        // than drawn as an empty grey bar: everything before `--start-on`, and everything
+        // after today when the current year is counted until now.
+        let months = MONTHS
+            .iter()
+            .enumerate()
+            .filter(|(month, _)| report.month_totals[*month] > 0)
+            .map(|(month, name)| {
+                let total = report.month_totals[month];
+                MonthRow {
+                    label: format!("{name:<3} "),
+                    bar: Rc::new(BarData {
+                        weights: report
+                            .entries
+                            .iter()
+                            .map(|entry| entry.seconds_by_month[month])
+                            .collect(),
+                        total,
+                    }),
+                    days: format!(" {:>6.2}d ", seconds_to_days(total)),
+                    detail: month_detail(report, month, total),
+                }
+            })
+            .collect();
+
+        Self {
+            title: format!(" day-counter {}", report.year),
+            meta: format!(
+                "  |  {:.2} tracked days  |  {}  |  q/Esc quit",
+                seconds_to_days(report.total_seconds),
+                transit
+            ),
+            totals,
+            annual: Rc::new(BarData {
+                weights: report
+                    .entries
+                    .iter()
+                    .map(|entry| entry.total_seconds())
+                    .collect(),
+                total: report.total_seconds,
+            }),
+            legend,
+            months,
+            countries: scroll::State::default(),
+            shares: scroll::State::default(),
+            calendar: scroll::State::default(),
+            hovered: None,
+            pinned: None,
+        }
     }
 
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(" Monthly Days And Percentages ")
-                .borders(Borders::ALL),
-        )
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    fn render(&mut self, mut ui: Ui<'_>) {
+        if quit_requested(ui.input()) {
+            ui.platform().quit();
+            return;
+        }
+
+        let mut root = ui.layout(flex::column());
+
+        let quit = root
+            .child(flex::item().height(Sizing::fixed(3.0)))
+            .build(|ui: Ui<'_>| self.render_header(ui));
+
+        {
+            let mut middle = root
+                .child(flex::item().height(Sizing::fixed(11.0)))
+                .layout(flex::row());
+            middle
+                .child(flex::item().width(Sizing::percent(0.52)))
+                .build(|ui: Ui<'_>| self.render_totals(ui));
+            // Read the hover back after the list has run, so the bars pick it up in
+            // this frame rather than the next one.
+            let highlight = self.pinned.or(self.hovered);
+            middle
+                .child(flex::item().width(Sizing::percent(0.48)))
+                .build(|ui: Ui<'_>| self.render_annual(ui, highlight));
+        }
+
+        let highlight = self.pinned.or(self.hovered);
+        // `grow`, not `grow_range(12, ..)`: ratatui's `Min(12)` yields when the terminal is
+        // short, while a hard floor here pushes the panel off screen and makes the month
+        // list believe it has room for all twelve rows, so it never scrolls.
+        root.child(flex::item().height(Sizing::grow()))
+            .build(|ui: Ui<'_>| self.render_monthly(ui, highlight));
+
+        if quit {
+            root.platform().quit();
+        }
+    }
+
+    fn render_header(&self, ui: Ui<'_>) -> bool {
+        let mut header = ui.layout(flex::row().padding(Sides::all(1.0)).align(Align::Center));
+        header.insert(Block::new().border(Border::new(Color::Reset)));
+
+        let spans = [
+            Span::new(self.title.as_str())
+                .color(Color::WHITE)
+                .attributes(TextAttributes::BOLD),
+            Span::new(self.meta.as_str()),
+        ];
+        header
+            .child(line(Sizing::grow()))
+            .insert(Text::rich(&spans).options(one_line()));
+
+        header
+            .child(flex::item().fixed(8.0, 1.0))
+            .build(|mut ui: Ui<'_>| {
+                let id = WidgetId::new("quit");
+                let interaction = ui.interact(id, Sense::CLICK);
+
+                let mut button = ui.widget_id(id);
+                button.insert(Block::new().background(if interaction.hovered {
+                    Color::LIGHT_RED
+                } else {
+                    Color::DARK_GRAY
+                }));
+                button.insert(
+                    Text::new("quit")
+                        .options(one_line().horizontal_align(HorizontalAlign::Center)),
+                );
+
+                interaction.clicked
+            })
+    }
+
+    fn render_totals(&mut self, ui: Ui<'_>) {
+        let Self {
+            totals,
+            countries,
+            hovered,
+            pinned,
+            ..
+        } = self;
+        let mut panel = panel(ui, " Year Totals ");
+
+        {
+            let mut head = panel.child(line(Sizing::grow())).layout(flex::row().gap(1.0));
+            for (label, width) in HEADINGS.into_iter().zip(COLUMNS) {
+                head.child(line(width))
+                    .insert(Text::new(label).attributes(TextAttributes::BOLD));
+            }
+            // The rows below live in a scroll list, which keeps a column for its
+            // scrollbar; reserve the same column here so the headings line up.
+            head.child(line(Sizing::fixed(GUTTER))).insert(());
+        }
+
+        let mut picked = None;
+        panel.child(flex::item().grow()).build(
+            List::new(countries, BoundsClip, totals.iter().enumerate(), 1.0).build(
+                |mut ui: Ui<'_>, (index, row): (usize, &TotalRow)| {
+                    let id = WidgetId::new(("country", index));
+                    let interaction = ui.interact(id, Sense::CLICK);
+                    if interaction.hovered {
+                        picked = Some(index);
+                    }
+                    if interaction.clicked {
+                        *pinned = (*pinned != Some(index)).then_some(index);
+                    }
+
+                    let mut node = ui.widget_id(id).layout(flex::row().gap(1.0));
+                    if *pinned == Some(index) || interaction.hovered {
+                        node.insert(Block::new().background(Color::DARK_GRAY));
+                    }
+                    node.child(line(COLUMNS[0])).insert(
+                        Text::new(row.country.as_str())
+                            .color(color_for(index))
+                            .options(one_line()),
+                    );
+                    node.child(line(COLUMNS[1]))
+                        .insert(Text::new(row.days.as_str()));
+                    node.child(line(COLUMNS[2]))
+                        .insert(Text::new(row.hours.as_str()));
+                    node.child(line(COLUMNS[3]))
+                        .insert(Text::new(row.share.as_str()));
+                },
+            ),
+        );
+        *hovered = picked;
+    }
+
+    fn render_annual(&mut self, ui: Ui<'_>, highlight: Option<usize>) {
+        let Self {
+            annual,
+            legend,
+            shares,
+            ..
+        } = self;
+        let mut panel = panel(ui, " Annual Share ");
+
+        {
+            let mut row = panel.child(line(Sizing::grow())).layout(flex::row());
+            row.child(line(Sizing::grow()))
+                .insert(StackedBar::new(Rc::clone(annual)).highlight(highlight));
+            // The old bar stopped two cells short of the inner width; keep that margin.
+            row.child(line(Sizing::fixed(2.0))).insert(());
+        }
+
+        panel.child(line(Sizing::grow())).insert(());
+
+        // Every country is listed; the ones that do not fit are scrolled to.
+        panel.child(flex::item().grow()).build(
+            List::new(shares, BoundsClip, legend.iter().enumerate(), 1.0).build(
+                |mut ui: Ui<'_>, (index, entry): (usize, &String)| {
+                    let spans = [
+                        Span::new("██ ").color(color_for(index)),
+                        Span::new(entry.as_str()),
+                    ];
+                    ui.insert(Text::rich(&spans).options(one_line()));
+                },
+            ),
+        );
+    }
+
+    fn render_monthly(&mut self, ui: Ui<'_>, highlight: Option<usize>) {
+        // One bar width for all twelve months, taken from the current frame size, so the
+        // bars stay comparable. A per-row `grow` would let one month's long detail line
+        // shrink that month's bar alone.
+        let bar_width = (ui.screen().width - 42.0).clamp(12.0, 42.0);
+        let Self {
+            months, calendar, ..
+        } = self;
+        let mut panel = panel(ui, " Monthly Days And Percentages ");
+
+        panel.child(flex::item().grow()).build(
+            List::new(calendar, BoundsClip, months.iter(), 1.0).build(
+                |ui: Ui<'_>, month: &MonthRow| {
+                    let mut row = ui.layout(flex::row());
+                    row.child(line(Sizing::fixed(4.0))).insert(
+                        Text::new(month.label.as_str()).attributes(TextAttributes::BOLD),
+                    );
+                    row.child(line(Sizing::fixed(bar_width)))
+                        .insert(StackedBar::new(Rc::clone(&month.bar)).highlight(highlight));
+                    row.child(line(Sizing::fixed(9.0)))
+                        .insert(Text::new(month.days.as_str()));
+                    row.child(line(Sizing::grow()))
+                        .insert(Text::new(month.detail.as_str()).options(one_line()));
+                },
+            ),
+        );
+    }
+}
+
+/// A bordered, titled box whose children sit inside the border.
+fn panel<'a>(ui: Ui<'a>, title: &str) -> Ui<'a, Open<flex::Layout>> {
+    let mut panel = ui.layout(flex::column().padding(Sides::all(1.0)));
+    panel.insert(
+        Block::new()
+            .border(Border::new(Color::Reset))
+            .title(Title::new(title)),
+    );
+    panel
+}
+
+/// A one-row flex child of the given width.
+fn line(width: Sizing) -> flex::Item {
+    flex::item().width(width).height(Sizing::fixed(1.0))
+}
+
+/// One row, clipped with an ellipsis rather than wrapped.
+fn one_line() -> TextOptions {
+    TextOptions::new()
+        .overflow(TextOverflow::Ellipsis)
+        .max_lines(1)
+}
+
+/// blit routes a bare letter as text and a modified one as a key, so `q` and `Ctrl+C`
+/// arrive through different arms.
+fn quit_requested(input: &Input) -> bool {
+    match input {
+        Input::Text('q') => true,
+        Input::Key(key) if key.pressed => match key.key {
+            Key::Escape | Key::Character('q') => true,
+            Key::Character('c') => key.modifiers.control(),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn month_detail(report: &Report, month_index: usize, month_total: i64) -> String {
@@ -226,93 +417,23 @@ fn compact_country(country: &str) -> String {
     value
 }
 
-fn stacked_bar_spans(width: usize, buckets: &[(usize, i64)], total: i64) -> Vec<Span<'static>> {
-    if width == 0 {
-        return Vec::new();
+type List<'a, I, F = ()> = scroll::List<'a, TuiPlatform, I, BoundsClip, Scrollbar, F>;
+
+/// A one-cell scrollbar: a dark track with a brighter thumb.
+#[derive(Clone, Copy, Default)]
+struct Scrollbar;
+
+impl scroll::Scrollbar for Scrollbar {
+    const HAS_TRACK: bool = true;
+    const HAS_THUMB: bool = true;
+
+    type Track = Block<'static>;
+    type Thumb = Block<'static>;
+
+    fn into_content(self, active: bool) -> (Self::Track, Self::Thumb) {
+        (
+            Block::new().background(Color::Reset),
+            Block::new().background(if active { Color::WHITE } else { Color::DARK_GRAY }),
+        )
     }
-
-    if total <= 0 {
-        return vec![Span::styled(
-            "░".repeat(width),
-            Style::default().fg(Color::DarkGray),
-        )];
-    }
-
-    let mut segments = buckets
-        .iter()
-        .filter(|(_, seconds)| *seconds > 0)
-        .map(|(index, seconds)| {
-            let exact = *seconds as f64 * width as f64 / total as f64;
-            (*index, *seconds, exact.floor() as usize, exact.fract())
-        })
-        .collect::<Vec<_>>();
-
-    let mut used = segments
-        .iter()
-        .map(|(_, _, cells, _)| *cells)
-        .sum::<usize>();
-    for segment in &mut segments {
-        if segment.2 == 0 && used < width {
-            segment.2 = 1;
-            used += 1;
-        }
-    }
-
-    segments.sort_by(|left, right| {
-        right
-            .3
-            .partial_cmp(&left.3)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    for segment in &mut segments {
-        if used >= width {
-            break;
-        }
-        segment.2 += 1;
-        used += 1;
-    }
-    segments.sort_by_key(|(index, _, _, _)| *index);
-
-    let mut spans = Vec::new();
-    let mut emitted = 0;
-    for (index, _, cells, _) in segments {
-        if emitted >= width {
-            break;
-        }
-        let cells = cells.min(width - emitted);
-        if cells > 0 {
-            spans.push(Span::styled(
-                "█".repeat(cells),
-                Style::default().fg(color_for(index)),
-            ));
-            emitted += cells;
-        }
-    }
-
-    if emitted < width {
-        spans.push(Span::styled(
-            "░".repeat(width - emitted),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    spans
-}
-
-fn color_for(index: usize) -> Color {
-    const COLORS: [Color; 12] = [
-        Color::Cyan,
-        Color::Yellow,
-        Color::Green,
-        Color::Magenta,
-        Color::LightBlue,
-        Color::LightRed,
-        Color::LightGreen,
-        Color::LightMagenta,
-        Color::LightCyan,
-        Color::LightYellow,
-        Color::Blue,
-        Color::Gray,
-    ];
-    COLORS[index % COLORS.len()]
 }

@@ -3,7 +3,7 @@
 `day-counter` is a Rust terminal app that counts how much time you spent in each
 country during one calendar year from a list of flights. It accounts for local
 departure and arrival times by converting every timestamp through an explicit
-IANA time zone, then displays monthly and yearly percentages in a Ratatui
+IANA time zone, then displays monthly and yearly percentages in a blit
 dashboard.
 
 ## Input Format
@@ -86,8 +86,16 @@ DST transitions correctly.
 cargo run -- --config examples/trip.json
 ```
 
-In a normal terminal this opens the Ratatui dashboard. Press `q` or `Esc` to
-quit.
+In a normal terminal this opens the blit dashboard. Press `q`, `Esc` or `Ctrl+C`
+to quit, or click the `quit` button.
+
+The lists scroll with the mouse wheel when they do not fit, so every country is
+reachable. Hovering a country highlights its share in every bar; clicking one
+pins that highlight until you click it again.
+
+Months with no tracked time are left out of the month list: everything before
+`--start-on`, and everything after today when the current year is counted until
+now.
 
 For text output:
 

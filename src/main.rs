@@ -1,3 +1,4 @@
+mod bar;
 mod ui;
 
 use std::io::{self, IsTerminal};
@@ -6,14 +7,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use chrono::{Datelike, NaiveDate, Utc};
 use clap::Parser;
-use crossterm::{
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
 use day_counter::{
     EndMode, MONTHS, Report, ReportOptions, TripInput, load_trip_json, percentage, seconds_to_days,
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -25,7 +21,7 @@ struct Cli {
     #[arg(short, long, alias = "input")]
     config: PathBuf,
 
-    /// Print a text summary instead of opening the Ratatui dashboard.
+    /// Print a text summary instead of opening the dashboard.
     #[arg(long)]
     summary: bool,
 
@@ -78,28 +74,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    run_tui(&report).context("failed to run terminal UI")
+    ui::run(&report).context("failed to run terminal UI")
 }
 
 fn parse_start_date(value: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
         .with_context(|| format!("invalid --start-on date `{value}`; expected YYYY-MM-DD"))
-}
-
-fn run_tui(report: &Report) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    let result = ui::run(&mut terminal, report);
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    result
 }
 
 fn print_summary(report: &Report) {
