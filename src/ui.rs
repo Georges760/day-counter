@@ -238,15 +238,19 @@ impl Dashboard {
         let mut panel = panel(ui, " Year Totals ");
 
         {
-            let mut head = panel.child().item(line(Sizing::grow())).layout(flex::row().gap(1.0));
+            // The rows below live in a scroll list, which keeps a column for its
+            // scrollbar; reserve the same column here so the headings line up. It is
+            // padding rather than a spacer child, which would also cost a gap.
+            let mut head = panel.child().item(line(Sizing::grow())).layout(
+                flex::row()
+                    .gap(1.0)
+                    .padding(Sides::new().right(GUTTER)),
+            );
             for (label, width) in HEADINGS.into_iter().zip(COLUMNS) {
                 head.child()
                     .item(line(width))
                     .insert(Text::new(label).attributes(TextAttributes::BOLD));
             }
-            // The rows below live in a scroll list, which keeps a column for its
-            // scrollbar; reserve the same column here so the headings line up.
-            head.child().item(line(Sizing::fixed(GUTTER))).insert(());
         }
 
         let mut picked = None;
