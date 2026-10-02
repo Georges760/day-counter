@@ -6,6 +6,26 @@ departure and arrival times by converting every timestamp through an explicit
 IANA time zone, then displays monthly and yearly percentages in a blit
 dashboard.
 
+![The day-counter dashboard: yearly totals per country, the annual share bar, and one stacked bar per month](assets/screenshot.png)
+
+The dashboard for [`examples/trip.json`](examples/trip.json). Each country has
+its own colour, and every bar is split between the countries in proportion to
+the time spent in each.
+
+## Install
+
+You need a recent stable Rust toolchain (the crate uses the 2024 edition). From
+a checkout of this repository:
+
+```sh
+cargo install --path .
+day-counter --config examples/trip.json
+```
+
+`day-counter` is not on crates.io. Its dashboard is built on
+[blit](https://github.com/nicoburniske/blit), which is only distributed as a git
+repository, so it is pulled from there at the commit pinned in `Cargo.toml`.
+
 ## Input Format
 
 Provide a JSON file with the report settings and flight list:
@@ -105,3 +125,18 @@ cargo run -- --config examples/trip.json --summary
 
 If `full_year` is not set, the current year is counted until now and other years
 are counted as a full calendar year.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
