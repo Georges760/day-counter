@@ -11,8 +11,8 @@ categories = ["command-line-utilities", "date-and-time"]
 
 [dependencies]
 anyhow = "1.0"
-blit = { git = "https://github.com/nicoburniske/blit", rev = "b26b8e2c701edb1413a036f3d5ab0e25139e067c" }
-blit-tui = { git = "https://github.com/nicoburniske/blit", rev = "b26b8e2c701edb1413a036f3d5ab0e25139e067c" }
+blit = { git = "https://github.com/nicoburniske/blit", rev = "b90e8f76463baef6123d3ee2c20beeffee9d47de" }
+blit-tui = { git = "https://github.com/nicoburniske/blit", rev = "b90e8f76463baef6123d3ee2c20beeffee9d47de" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 chrono-tz = "0.10"
 clap = { version = "4.5", features = ["derive"] }

@@ -109,6 +109,10 @@ cargo run -- --config examples/trip.json
 In a normal terminal this opens the blit dashboard. Press `q`, `Esc` or `Ctrl+C`
 to quit, or click the `quit` button.
 
+The dashboard needs a Unix terminal. `Esc` and `Ctrl+C` are only recognised by
+terminals that speak the kitty keyboard protocol, such as kitty or Ghostty; in
+any other terminal, quit with `q` or the button.
+
 The lists scroll with the mouse wheel when they do not fit, so every country is
 reachable. Hovering a country highlights its share in every bar; clicking one
 pins that highlight until you click it again.

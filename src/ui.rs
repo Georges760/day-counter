@@ -10,12 +10,12 @@ use std::rc::Rc;
 use anyhow::Result;
 use blit::{Input, Key, Sense, Sides, Sizing, WidgetId, state::Open};
 use blit_tui::{
-    BoundsClip, TuiPlatform, Ui,
+    Ui,
     atom::Border,
     color::Color,
     layout::{Align, flex},
     text::{HorizontalAlign, Span, TextAttributes, TextOptions, TextOverflow},
-    widget::{Block, Text, Title, scroll},
+    widget::{Block, Text, Title, scroll_list},
 };
 use day_counter::{MONTHS, Report, percentage, seconds_to_days};
 
@@ -46,9 +46,9 @@ struct Dashboard {
     annual: Rc<BarData>,
     legend: Vec<String>,
     months: Vec<MonthRow>,
-    countries: scroll::State,
-    shares: scroll::State,
-    calendar: scroll::State,
+    countries: scroll_list::State,
+    shares: scroll_list::State,
+    calendar: scroll_list::State,
     /// Country under the pointer, recomputed every frame.
     hovered: Option<usize>,
     /// Country clicked in the totals list; survives the pointer leaving.
@@ -147,9 +147,9 @@ impl Dashboard {
             }),
             legend,
             months,
-            countries: scroll::State::default(),
-            shares: scroll::State::default(),
-            calendar: scroll::State::default(),
+            countries: scroll_list::State::default(),
+            shares: scroll_list::State::default(),
+            calendar: scroll_list::State::default(),
             hovered: None,
             pinned: None,
         }
@@ -157,28 +157,28 @@ impl Dashboard {
 
     fn render(&mut self, mut ui: Ui<'_>) {
         if quit_requested(ui.input()) {
-            ui.platform().quit();
+            ui.context().quit();
             return;
         }
 
         let mut root = ui.layout(flex::column());
 
         let quit = root
-            .child(flex::item().height(Sizing::fixed(3.0)))
+            .child().item(flex::item().height(Sizing::fixed(3.0)))
             .build(|ui: Ui<'_>| self.render_header(ui));
 
         {
             let mut middle = root
-                .child(flex::item().height(Sizing::fixed(11.0)))
+                .child().item(flex::item().height(Sizing::fixed(11.0)))
                 .layout(flex::row());
             middle
-                .child(flex::item().width(Sizing::percent(0.52)))
+                .child().item(flex::item().width(Sizing::percent(0.52)))
                 .build(|ui: Ui<'_>| self.render_totals(ui));
             // Read the hover back after the list has run, so the bars pick it up in
             // this frame rather than the next one.
             let highlight = self.pinned.or(self.hovered);
             middle
-                .child(flex::item().width(Sizing::percent(0.48)))
+                .child().item(flex::item().width(Sizing::percent(0.48)))
                 .build(|ui: Ui<'_>| self.render_annual(ui, highlight));
         }
 
@@ -186,11 +186,11 @@ impl Dashboard {
         // `grow`, not `grow_range(12, ..)`: ratatui's `Min(12)` yields when the terminal is
         // short, while a hard floor here pushes the panel off screen and makes the month
         // list believe it has room for all twelve rows, so it never scrolls.
-        root.child(flex::item().height(Sizing::grow()))
+        root.child().item(flex::item().height(Sizing::grow()))
             .build(|ui: Ui<'_>| self.render_monthly(ui, highlight));
 
         if quit {
-            root.platform().quit();
+            root.context().quit();
         }
     }
 
@@ -205,22 +205,20 @@ impl Dashboard {
             Span::new(self.meta.as_str()),
         ];
         header
-            .child(line(Sizing::grow()))
+            .child().item(line(Sizing::grow()))
             .insert(Text::rich(&spans).options(one_line()));
 
         header
-            .child(flex::item().fixed(8.0, 1.0))
+            .child().item(flex::item().fixed(8.0, 1.0))
             .build(|mut ui: Ui<'_>| {
-                let id = WidgetId::new("quit");
-                let interaction = ui.interact(id, Sense::CLICK);
+                let interaction = ui.interact(Sense::CLICK);
 
-                let mut button = ui.widget_id(id);
-                button.insert(Block::new().background(if interaction.hovered {
+                ui.insert(Block::new().background(if interaction.hovered {
                     Color::LIGHT_RED
                 } else {
                     Color::DARK_GRAY
                 }));
-                button.insert(
+                ui.insert(
                     Text::new("quit")
                         .options(one_line().horizontal_align(HorizontalAlign::Center)),
                 );
@@ -240,22 +238,28 @@ impl Dashboard {
         let mut panel = panel(ui, " Year Totals ");
 
         {
-            let mut head = panel.child(line(Sizing::grow())).layout(flex::row().gap(1.0));
+            let mut head = panel.child().item(line(Sizing::grow())).layout(flex::row().gap(1.0));
             for (label, width) in HEADINGS.into_iter().zip(COLUMNS) {
-                head.child(line(width))
+                head.child()
+                    .item(line(width))
                     .insert(Text::new(label).attributes(TextAttributes::BOLD));
             }
             // The rows below live in a scroll list, which keeps a column for its
             // scrollbar; reserve the same column here so the headings line up.
-            head.child(line(Sizing::fixed(GUTTER))).insert(());
+            head.child().item(line(Sizing::fixed(GUTTER))).insert(());
         }
 
         let mut picked = None;
-        panel.child(flex::item().grow()).build(
-            List::new(countries, BoundsClip, totals.iter().enumerate(), 1.0).build(
+        panel
+            .child()
+            .item(flex::item().grow())
+            .build(scroll_list::new(
+                countries,
+                scroll_list::Config::new(1.0),
+                totals.iter().enumerate(),
+                |(index, _)| WidgetId::new(("country", *index)),
                 |mut ui: Ui<'_>, (index, row): (usize, &TotalRow)| {
-                    let id = WidgetId::new(("country", index));
-                    let interaction = ui.interact(id, Sense::CLICK);
+                    let interaction = ui.interact(Sense::CLICK);
                     if interaction.hovered {
                         picked = Some(index);
                     }
@@ -263,24 +267,27 @@ impl Dashboard {
                         *pinned = (*pinned != Some(index)).then_some(index);
                     }
 
-                    let mut node = ui.widget_id(id).layout(flex::row().gap(1.0));
+                    let mut node = ui.layout(flex::row().gap(1.0));
                     if *pinned == Some(index) || interaction.hovered {
                         node.insert(Block::new().background(Color::DARK_GRAY));
                     }
-                    node.child(line(COLUMNS[0])).insert(
+                    node.child().item(line(COLUMNS[0])).insert(
                         Text::new(row.country.as_str())
                             .color(color_for(index))
                             .options(one_line()),
                     );
-                    node.child(line(COLUMNS[1]))
+                    node.child()
+                        .item(line(COLUMNS[1]))
                         .insert(Text::new(row.days.as_str()));
-                    node.child(line(COLUMNS[2]))
+                    node.child()
+                        .item(line(COLUMNS[2]))
                         .insert(Text::new(row.hours.as_str()));
-                    node.child(line(COLUMNS[3]))
+                    node.child()
+                        .item(line(COLUMNS[3]))
                         .insert(Text::new(row.share.as_str()));
                 },
-            ),
-        );
+                scrollbar,
+            ));
         *hovered = picked;
     }
 
@@ -294,18 +301,24 @@ impl Dashboard {
         let mut panel = panel(ui, " Annual Share ");
 
         {
-            let mut row = panel.child(line(Sizing::grow())).layout(flex::row());
-            row.child(line(Sizing::grow()))
+            let mut row = panel.child().item(line(Sizing::grow())).layout(flex::row());
+            row.child().item(line(Sizing::grow()))
                 .insert(StackedBar::new(Rc::clone(annual)).highlight(highlight));
             // The old bar stopped two cells short of the inner width; keep that margin.
-            row.child(line(Sizing::fixed(2.0))).insert(());
+            row.child().item(line(Sizing::fixed(2.0))).insert(());
         }
 
-        panel.child(line(Sizing::grow())).insert(());
+        panel.child().item(line(Sizing::grow())).insert(());
 
         // Every country is listed; the ones that do not fit are scrolled to.
-        panel.child(flex::item().grow()).build(
-            List::new(shares, BoundsClip, legend.iter().enumerate(), 1.0).build(
+        panel
+            .child()
+            .item(flex::item().grow())
+            .build(scroll_list::new(
+                shares,
+                scroll_list::Config::new(1.0),
+                legend.iter().enumerate(),
+                |(index, _)| WidgetId::new(("share", *index)),
                 |mut ui: Ui<'_>, (index, entry): (usize, &String)| {
                     let spans = [
                         Span::new("██ ").color(color_for(index)),
@@ -313,8 +326,8 @@ impl Dashboard {
                     ];
                     ui.insert(Text::rich(&spans).options(one_line()));
                 },
-            ),
-        );
+                scrollbar,
+            ));
     }
 
     fn render_monthly(&mut self, ui: Ui<'_>, highlight: Option<usize>) {
@@ -327,22 +340,31 @@ impl Dashboard {
         } = self;
         let mut panel = panel(ui, " Monthly Days And Percentages ");
 
-        panel.child(flex::item().grow()).build(
-            List::new(calendar, BoundsClip, months.iter(), 1.0).build(
+        panel
+            .child()
+            .item(flex::item().grow())
+            .build(scroll_list::new(
+                calendar,
+                scroll_list::Config::new(1.0),
+                months.iter(),
+                |month| WidgetId::new(("month", month.label.as_str())),
                 |ui: Ui<'_>, month: &MonthRow| {
                     let mut row = ui.layout(flex::row());
-                    row.child(line(Sizing::fixed(4.0))).insert(
-                        Text::new(month.label.as_str()).attributes(TextAttributes::BOLD),
-                    );
-                    row.child(line(Sizing::fixed(bar_width)))
+                    row.child()
+                        .item(line(Sizing::fixed(4.0)))
+                        .insert(Text::new(month.label.as_str()).attributes(TextAttributes::BOLD));
+                    row.child()
+                        .item(line(Sizing::fixed(bar_width)))
                         .insert(StackedBar::new(Rc::clone(&month.bar)).highlight(highlight));
-                    row.child(line(Sizing::fixed(9.0)))
+                    row.child()
+                        .item(line(Sizing::fixed(9.0)))
                         .insert(Text::new(month.days.as_str()));
-                    row.child(line(Sizing::grow()))
+                    row.child()
+                        .item(line(Sizing::grow()))
                         .insert(Text::new(month.detail.as_str()).options(one_line()));
                 },
-            ),
-        );
+                scrollbar,
+            ));
     }
 }
 
@@ -417,23 +439,17 @@ fn compact_country(country: &str) -> String {
     value
 }
 
-type List<'a, I, F = ()> = scroll::List<'a, TuiPlatform, I, BoundsClip, Scrollbar, F>;
-
-/// A one-cell scrollbar: a dark track with a brighter thumb.
-#[derive(Clone, Copy, Default)]
-struct Scrollbar;
-
-impl scroll::Scrollbar for Scrollbar {
-    const HAS_TRACK: bool = true;
-    const HAS_THUMB: bool = true;
-
-    type Track = Block<'static>;
-    type Thumb = Block<'static>;
-
-    fn into_content(self, active: bool) -> (Self::Track, Self::Thumb) {
-        (
-            Block::new().background(Color::Reset),
-            Block::new().background(if active { Color::WHITE } else { Color::DARK_GRAY }),
-        )
-    }
+/// A one-cell scrollbar: an invisible track with a thumb that brightens while dragged.
+///
+/// The track is kept even though it draws nothing: it is what makes the list reserve
+/// its scrollbar column, so the thumb never covers the last character of a row.
+fn scrollbar(active: bool) -> (Option<Block<'static>>, Option<Block<'static>>) {
+    (
+        Some(Block::new().background(Color::Reset)),
+        Some(Block::new().background(if active {
+            Color::WHITE
+        } else {
+            Color::DARK_GRAY
+        })),
+    )
 }

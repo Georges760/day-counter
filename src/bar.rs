@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use blit::{Atom, Constraints, LogicalRect, Size};
 use blit_tui::{
-    TuiPlatform,
+    TuiContext,
     cell::{Cell, CellStyle},
     color::Color,
     text::TextAttributes,
@@ -143,8 +143,8 @@ impl StackedBar {
     }
 }
 
-impl Atom<TuiPlatform> for StackedBar {
-    fn measure(&self, _: &mut TuiPlatform, constraints: Constraints) -> Size {
+impl Atom<TuiContext> for StackedBar {
+    fn measure(&self, _: &mut TuiContext, constraints: Constraints) -> Size {
         // Take every column on offer; the parent's `Sizing` decides how many.
         let width = if constraints.max.width.is_finite() {
             constraints.max.width
@@ -154,7 +154,7 @@ impl Atom<TuiPlatform> for StackedBar {
         constraints.constrain(Size::new(width, 1.0))
     }
 
-    fn paint(&self, platform: &mut TuiPlatform, area: LogicalRect) {
+    fn paint(&self, platform: &mut TuiContext, area: LogicalRect) {
         let mut cells = platform.cells(area);
         let (width, rows) = (cells.columns(), cells.rows());
         if width == 0 || rows == 0 {
